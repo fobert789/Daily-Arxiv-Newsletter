@@ -1,14 +1,12 @@
-# paperboy
+# Daily Arxiv Newsletter
 
 A self-hosted agentic service that emails you a curated daily digest of arXiv LLM papers, every morning.
-
-No dashboard. No feed to check. It just lands in your inbox.
 
 ---
 
 ## What it does
 
-Each morning paperboy:
+Each morning the service:
 
 1. Queries arXiv for papers submitted in the last 48 hours (96 on Mondays)
 2. Runs two targeted searches: one for **clinical LLM** papers, one for **general LLM** research
@@ -48,8 +46,8 @@ config.py        constants and environment loading
 **Requirements:** Python 3.11+, an [OpenRouter](https://openrouter.ai) API key, an [exe.dev](https://exe.dev) VM for email delivery.
 
 ```bash
-git clone https://github.com/yourname/paperboy
-cd paperboy
+git clone https://github.com/yourname/daily-arxiv-newsletter
+cd daily-arxiv-newsletter
 
 pip install arxiv requests beautifulsoup4 python-dotenv
 
@@ -90,14 +88,14 @@ The script exits immediately if it already ran today (checked via log file), so 
 Two cron entries handle daylight saving time automatically:
 
 ```
-0 5 * * * cd /path/to/paperboy && /usr/bin/python3 newsletter.py >> logs/cron.log 2>&1
-0 6 * * * cd /path/to/paperboy && /usr/bin/python3 newsletter.py >> logs/cron.log 2>&1
+0 5 * * * cd /path/to/daily-arxiv-newsletter && /usr/bin/python3 newsletter.py >> logs/cron.log 2>&1
+0 6 * * * cd /path/to/daily-arxiv-newsletter && /usr/bin/python3 newsletter.py >> logs/cron.log 2>&1
 ```
 
 Install with:
 ```bash
-(crontab -l 2>/dev/null; echo "0 5 * * * cd /path/to/paperboy && /usr/bin/python3 newsletter.py >> logs/cron.log 2>&1") | crontab -
-(crontab -l 2>/dev/null; echo "0 6 * * * cd /path/to/paperboy && /usr/bin/python3 newsletter.py >> logs/cron.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "0 5 * * * cd /path/to/daily-arxiv-newsletter && /usr/bin/python3 newsletter.py >> logs/cron.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "0 6 * * * cd /path/to/daily-arxiv-newsletter && /usr/bin/python3 newsletter.py >> logs/cron.log 2>&1") | crontab -
 ```
 
 ## Logs and database
