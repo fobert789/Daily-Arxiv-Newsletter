@@ -1,3 +1,5 @@
+![Daily arXiv Newsletter](banner.png)
+
 # Daily Arxiv Newsletter
 
 A self-hosted agentic service that emails you a curated daily digest of arXiv LLM papers, every morning.
