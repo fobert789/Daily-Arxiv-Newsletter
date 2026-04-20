@@ -40,12 +40,14 @@ def summarize(paper: dict) -> dict:
     user_message = "\n".join(lines)
 
     try:
-        summary = call_llm(system_prompt, user_message, max_tokens=1500)
+        summary, model_used = call_llm(system_prompt, user_message, max_tokens=1500)
         paper["summary"] = summary
-        logging.info(f"Summary generated for {paper['arxiv_id']} ({len(summary)} chars)")
+        paper["model_used"] = model_used
+        logging.info(f"Summary generated for {paper['arxiv_id']} by {model_used} ({len(summary)} chars)")
     except Exception as e:
         logging.error(f"Summary generation failed for {paper['arxiv_id']}: {e}")
         paper["summary"] = f"(Summary generation failed. Abstract: {paper['abstract']})"
+        paper["model_used"] = "unknown"
 
     return paper
 

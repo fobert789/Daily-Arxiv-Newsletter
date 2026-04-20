@@ -9,8 +9,10 @@ from config import OPENROUTER_API_KEY, MODELS
 TITLE_SCREEN_KEEP = 15
 
 
-def call_llm(system_prompt: str, user_message: str, max_tokens: int = 1000) -> str:
-    """Call OpenRouter with native model fallback (no silent provider rerouting)."""
+def call_llm(system_prompt: str, user_message: str, max_tokens: int = 1000) -> tuple:
+    """Call OpenRouter with native model fallback list.
+    Returns (content, model_used).
+    """
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -18,7 +20,6 @@ def call_llm(system_prompt: str, user_message: str, max_tokens: int = 1000) -> s
     }
     body = {
         "models": MODELS,
-        "provider": {"allow_fallbacks": False},
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_message},
@@ -29,8 +30,9 @@ def call_llm(system_prompt: str, user_message: str, max_tokens: int = 1000) -> s
     r.raise_for_status()
     data = r.json()
     content = data["choices"][0]["message"]["content"].strip()
-    logging.info(f"LLM call succeeded with model: {data.get('model', 'unknown')}")
-    return content
+    model_used = data.get("model", "unknown")
+    logging.info(f"LLM call succeeded with model: {model_used}")
+    return content, model_used
 
 
 def _parse_json_ids(raw: str) -> list:
@@ -82,7 +84,7 @@ def _title_screen(papers: list, system_prompt: str, label: str, keep: int) -> li
 
     raw = ""
     try:
-        raw = call_llm(system_prompt, user_message, max_tokens=500)
+        raw, _ = call_llm(system_prompt, user_message, max_tokens=500)
         ids = _parse_json_ids(raw)
         shortlist = _ids_to_papers(ids[:keep], paper_map)
         logging.info(f"[{label}] Title screen: {len(papers)} → {len(shortlist)} candidates")
@@ -129,7 +131,7 @@ def _abstract_screen(papers: list, system_prompt: str, label: str, pick: int) ->
 
     raw = ""
     try:
-        raw = call_llm(system_prompt, user_message, max_tokens=300)
+        raw, _ = call_llm(system_prompt, user_message, max_tokens=300)
         ids = _parse_json_ids(raw)
         selected = _ids_to_papers(ids[:pick], paper_map)
         logging.info(f"[{label}] Abstract screen: {len(papers)} → {len(selected)} final picks: {[p['arxiv_id'] for p in selected]}")

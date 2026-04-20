@@ -38,6 +38,7 @@ def _format_body(selected: list, stats: dict) -> str:
         if p.get("journal_ref"):
             lines.append(f"Published in: {p['journal_ref']}")
         lines.append(f"https://arxiv.org/abs/{p['arxiv_id']}")
+        lines.append(f"Summarised by: {p.get('model_used', 'unknown')}")
         lines.append("")
         lines.append(p.get("summary", ""))
         lines.append("")
