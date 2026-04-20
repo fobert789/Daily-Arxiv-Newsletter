@@ -3,37 +3,34 @@ import logging
 import requests
 import time
 
-from config import OPENROUTER_API_KEY, PRIMARY_MODEL, FALLBACK_MODEL
+from config import OPENROUTER_API_KEY, MODELS
 
 # How many candidates to carry forward from title screen into abstract screen
 TITLE_SCREEN_KEEP = 15
 
 
 def call_llm(system_prompt: str, user_message: str, max_tokens: int = 1000) -> str:
-    """Call OpenRouter. Try PRIMARY_MODEL, fall back to FALLBACK_MODEL on error."""
+    """Call OpenRouter with native model fallback (no silent provider rerouting)."""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
     }
-    for model in [PRIMARY_MODEL, FALLBACK_MODEL]:
-        try:
-            body = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_message},
-                ],
-                "max_tokens": max_tokens,
-            }
-            r = requests.post(url, headers=headers, json=body, timeout=60)
-            r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"].strip()
-            logging.info(f"LLM call succeeded with model: {model}")
-            return content
-        except Exception as e:
-            logging.warning(f"LLM call failed with {model}: {e}")
-    raise RuntimeError("Both PRIMARY_MODEL and FALLBACK_MODEL failed.")
+    body = {
+        "models": MODELS,
+        "provider": {"allow_fallbacks": False},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_message},
+        ],
+        "max_tokens": max_tokens,
+    }
+    r = requests.post(url, headers=headers, json=body, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    content = data["choices"][0]["message"]["content"].strip()
+    logging.info(f"LLM call succeeded with model: {data.get('model', 'unknown')}")
+    return content
 
 
 def _parse_json_ids(raw: str) -> list:
