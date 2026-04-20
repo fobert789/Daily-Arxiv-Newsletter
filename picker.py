@@ -3,7 +3,10 @@ import logging
 import requests
 import time
 
-from config import OPENROUTER_API_KEY, PRIMARY_MODEL, FALLBACK_MODEL, PICKER_BATCH_SIZE
+from config import OPENROUTER_API_KEY, PRIMARY_MODEL, FALLBACK_MODEL
+
+# How many candidates to carry forward from title screen into abstract screen
+TITLE_SCREEN_KEEP = 15
 
 
 def call_llm(system_prompt: str, user_message: str, max_tokens: int = 1000) -> str:
@@ -33,64 +36,17 @@ def call_llm(system_prompt: str, user_message: str, max_tokens: int = 1000) -> s
     raise RuntimeError("Both PRIMARY_MODEL and FALLBACK_MODEL failed.")
 
 
-def _paper_block(p: dict) -> str:
-    lines = [
-        f"ID: {p['arxiv_id']}",
-        f"Title: {p['title']}",
-        f"Authors: {', '.join(p['authors'][:3])}",
-    ]
-    if p.get("comment"):
-        lines.append(f"Note: {p['comment']}")
-    if p.get("journal_ref"):
-        lines.append(f"Published in: {p['journal_ref']}")
-    lines.append(f"Abstract: {p['abstract']}")
-    lines.append("---")
-    return "\n".join(lines)
-
-
-def _pick_from_list(papers: list, system_prompt: str, label: str) -> list:
-    """Run batched LLM calls and return all selected arxiv_ids."""
-    if not papers:
-        return []
-
-    batches = [papers[i:i + PICKER_BATCH_SIZE] for i in range(0, len(papers), PICKER_BATCH_SIZE)]
-    total = len(batches)
-    all_ids = []
-
-    for i, batch in enumerate(batches, start=1):
-        prefix = f"(Batch {i} of {total}) " if total > 1 else ""
-        paper_text = "\n".join(_paper_block(p) for p in batch)
-        user_message = (
-            f"{prefix}Evaluate these {label} papers and return the best arxiv_ids "
-            f"as a JSON array.\n\n{paper_text}"
-        )
-        raw = ""
-        try:
-            raw = call_llm(system_prompt, user_message)
-            # Strip markdown fences if present
-            cleaned = raw.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-            ids = json.loads(cleaned.strip())
-            if isinstance(ids, list):
-                all_ids.extend(str(x) for x in ids)
-                logging.info(f"[{label}] Batch {i}/{total}: got {len(ids)} ids")
-            else:
-                logging.warning(f"[{label}] Batch {i}/{total}: unexpected type {type(ids)}")
-        except Exception as e:
-            logging.warning(f"[{label}] Batch {i}/{total}: parse/call failed — {e}. Raw: {raw!r}")
-        time.sleep(8)
-
-    # Deduplicate preserving order
-    seen = set()
-    deduped = []
-    for x in all_ids:
-        if x not in seen:
-            seen.add(x)
-            deduped.append(x)
-    return deduped
+def _parse_json_ids(raw: str) -> list:
+    """Extract a JSON array of IDs from LLM response, stripping markdown fences."""
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    ids = json.loads(cleaned.strip())
+    if not isinstance(ids, list):
+        raise ValueError(f"Expected list, got {type(ids)}")
+    return [str(x) for x in ids]
 
 
 def _ids_to_papers(ids: list, paper_map: dict) -> list:
@@ -103,9 +59,104 @@ def _ids_to_papers(ids: list, paper_map: dict) -> list:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Stage 1: title screen
+# ---------------------------------------------------------------------------
+
+def _title_screen(papers: list, system_prompt: str, label: str, keep: int) -> list:
+    """
+    Feed only titles + IDs to the LLM and ask it to shortlist `keep` candidates.
+    Returns the shortlisted paper dicts.
+    """
+    if not papers:
+        return []
+
+    paper_map = {p["arxiv_id"]: p for p in papers}
+    lines = [f"{p['arxiv_id']} | {p['title']}" for p in papers]
+    title_block = "\n".join(lines)
+
+    user_message = (
+        f"Below are {len(papers)} {label} papers (ID | title).\n"
+        f"Shortlist the {keep} most promising for a researcher specialising in "
+        f"LLMs in healthcare. Use titles alone — no abstracts provided yet.\n"
+        f"Return ONLY a JSON array of arxiv_ids. No explanation.\n\n"
+        f"{title_block}"
+    )
+
+    raw = ""
+    try:
+        raw = call_llm(system_prompt, user_message, max_tokens=500)
+        ids = _parse_json_ids(raw)
+        shortlist = _ids_to_papers(ids[:keep], paper_map)
+        logging.info(f"[{label}] Title screen: {len(papers)} → {len(shortlist)} candidates")
+        return shortlist
+    except Exception as e:
+        logging.warning(f"[{label}] Title screen failed ({e}), raw: {raw!r} — passing all papers to abstract screen")
+        return papers
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: abstract screen
+# ---------------------------------------------------------------------------
+
+def _abstract_screen(papers: list, system_prompt: str, label: str, pick: int) -> list:
+    """
+    Feed full abstracts for the shortlisted candidates and pick the final `pick` papers.
+    Returns the selected paper dicts.
+    """
+    if not papers:
+        return []
+
+    paper_map = {p["arxiv_id"]: p for p in papers}
+    blocks = []
+    for p in papers:
+        lines = [
+            f"ID: {p['arxiv_id']}",
+            f"Title: {p['title']}",
+            f"Authors: {', '.join(p['authors'][:3])}",
+        ]
+        if p.get("comment"):
+            lines.append(f"Note: {p['comment']}")
+        if p.get("journal_ref"):
+            lines.append(f"Published in: {p['journal_ref']}")
+        lines.append(f"Abstract: {p['abstract']}")
+        lines.append("---")
+        blocks.append("\n".join(lines))
+
+    paper_text = "\n".join(blocks)
+    user_message = (
+        f"From these {len(papers)} {label} papers, pick the best {pick}.\n"
+        f"Return ONLY a JSON array of arxiv_ids. No explanation.\n\n"
+        f"{paper_text}"
+    )
+
+    raw = ""
+    try:
+        raw = call_llm(system_prompt, user_message, max_tokens=300)
+        ids = _parse_json_ids(raw)
+        selected = _ids_to_papers(ids[:pick], paper_map)
+        logging.info(f"[{label}] Abstract screen: {len(papers)} → {len(selected)} final picks: {[p['arxiv_id'] for p in selected]}")
+        return selected
+    except Exception as e:
+        logging.warning(f"[{label}] Abstract screen failed ({e}), raw: {raw!r} — falling back to first {pick} candidates")
+        return papers[:pick]
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def pick_papers(query_a: list, query_b: list) -> list:
-    # ---- Clinical picks ----
-    clinical_system = (
+
+    title_system = (
+        "You are a research curator for an informatics PhD researcher specialising in "
+        "large language models applied to healthcare and clinical medicine. "
+        "Given a list of paper titles, shortlist the most promising candidates. "
+        "Return ONLY a JSON array of arxiv_ids. No explanation, no markdown."
+    )
+
+    # ---- Clinical: 2-stage ----
+    clinical_abstract_system = (
         "You are a research curator for an informatics PhD researcher specialising in "
         "applications of large language models in healthcare and clinical medicine. "
         "From the papers listed, identify the most interesting, novel, and impactful "
@@ -116,21 +167,21 @@ def pick_papers(query_a: list, query_b: list) -> list:
         "or genomics, represent meaningful methodological advances for healthcare AI, "
         "or are published in peer-reviewed journals. "
         "Return ONLY a JSON array of arxiv_ids. No explanation, no markdown, no "
-        'preamble. Just the raw JSON array. Example: [\"2504.01234\", \"2504.05678\"]'
+        'preamble. Just the raw JSON array. Example: ["2504.01234", "2504.05678"]'
     )
 
     if not query_a:
         logging.info("No clinical papers found in this window.")
-        clinical_ids = []
+        clinical_picks = []
     else:
-        clinical_ids = _pick_from_list(query_a, clinical_system, "clinical")
+        clinical_candidates = _title_screen(query_a, title_system, "clinical", TITLE_SCREEN_KEEP)
+        time.sleep(8)
+        clinical_picks = _abstract_screen(clinical_candidates, clinical_abstract_system, "clinical", 2)
 
-    map_a = {p["arxiv_id"]: p for p in query_a}
-    clinical_picks = _ids_to_papers(clinical_ids[:min(2, len(clinical_ids))], map_a)
     logging.info(f"Clinical picks: {[p['arxiv_id'] for p in clinical_picks]}")
 
-    # ---- General picks ----
-    general_system = (
+    # ---- General: 2-stage ----
+    general_abstract_system = (
         "You are a research curator for an informatics PhD researcher specialising in "
         "large language models, with a focus on healthcare applications. "
         "From the papers listed, identify the most interesting, novel, and high-impact "
@@ -144,18 +195,17 @@ def pick_papers(query_a: list, query_b: list) -> list:
         "preamble. Just the raw JSON array."
     )
 
-    # Remove clinical picks from query_b
     clinical_pick_ids = {p["arxiv_id"] for p in clinical_picks}
     query_b_filtered = [p for p in query_b if p["arxiv_id"] not in clinical_pick_ids]
 
     if not query_b_filtered:
         logging.info("No general papers to evaluate after filtering.")
-        general_ids = []
+        general_picks = []
     else:
-        general_ids = _pick_from_list(query_b_filtered, general_system, "general")
+        general_candidates = _title_screen(query_b_filtered, title_system, "general", TITLE_SCREEN_KEEP)
+        time.sleep(8)
+        general_picks = _abstract_screen(general_candidates, general_abstract_system, "general", 3)
 
-    map_b = {p["arxiv_id"]: p for p in query_b_filtered}
-    general_picks = _ids_to_papers(general_ids[:min(3, len(general_ids))], map_b)
     logging.info(f"General picks: {[p['arxiv_id'] for p in general_picks]}")
 
     # ---- Final selection ----
@@ -164,7 +214,6 @@ def pick_papers(query_a: list, query_b: list) -> list:
     # Fill clinical slots from general if needed
     if len(clinical_picks) < 2:
         shortfall = 2 - len(clinical_picks)
-        # Pull extras from general that aren't already in combined
         combined_ids = {p["arxiv_id"] for p in combined}
         extras = [p for p in general_picks if p["arxiv_id"] not in combined_ids]
         combined = clinical_picks + general_picks + extras[:shortfall]
